@@ -5,5 +5,20 @@ shortdesc: This example shows how to add a graticule overlay to a map.
 docs: >
   This example shows how to add a graticule overlay to a map.
 tags: "graticule"
+resources:
+- https://cdnjs.cloudflare.com/ajax/libs/proj4js/2.4.3/proj4.js
 ---
 <div id="map" class="map"></div>
+<form class="form-inline">
+  <label>Projection &nbsp;</label>
+  <select id="code">
+    <option value="EPSG:4326">EPSG:4326</option>
+    <option value="EPSG:3857">EPSG:3857 - Spherical Mercator</option>
+    <option value="EPSG:32662">EPSG 32662 - WSG 84 Platte Carre</option>
+    <option value="EPSG:32761">EPSG:32761 - Stereographic South Pole</option>
+    <option value="EPSG:32661">EPSG:32661 - Stereographic North Pole</option>
+    <option value="EPSG:3410">EPSG:3410 - Cylindrical Equal Area</option>
+    <option value="ESRI:102031">ESRI:102031 - Europe Equidistant Conic</option>
+    <option value="ESRI:53009">ESRI:53009 - Sphere Mollweide</option>
+  </select>
+</form>

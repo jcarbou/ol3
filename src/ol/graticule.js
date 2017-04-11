@@ -1,14 +1,19 @@
 goog.provide('ol.Graticule');
 
+goog.require('ol');
 goog.require('ol.extent');
 goog.require('ol.geom.GeometryLayout');
 goog.require('ol.geom.LineString');
 goog.require('ol.geom.flat.geodesic');
 goog.require('ol.math');
 goog.require('ol.proj');
+goog.require('ol.proj.transforms');
+goog.require('ol.proj.proj4');
 goog.require('ol.render.EventType');
 goog.require('ol.style.Stroke');
-
+goog.require('ol.style.Text');
+goog.require('ol.style.Fill');
+goog.require('ol.geom.Point');
 
 /**
  * Render a grid for a coordinate system on a map.
@@ -104,7 +109,37 @@ ol.Graticule = function(opt_options) {
   */
   this.parallels_ = [];
 
- /**
+  /**
+   * @type {Array.<ol.geom.Point>}
+   * @private
+   */
+  this.leftLabels_ = [];
+
+  /**
+   * @type {Array.<ol.geom.Point>}
+   * @private
+   */
+  this.rightLabels_ = [];
+
+  /**
+   * @type {Array.<ol.geom.Point>}
+   * @private
+   */
+  this.topLabels_ = [];
+
+  /**
+   * @type {Array.<ol.geom.Point>}
+   * @private
+   */
+  this.bottomLabels_ = [];
+
+  /**
+   * @type {ol.style.Text}
+   * @private
+   */
+  this.textStyle_ = options.textStyle || ol.Graticule.DEFAULT_TEXT_STYLE_;
+
+  /**
   * @type {ol.style.Stroke}
   * @private
   */
@@ -142,6 +177,18 @@ ol.Graticule.DEFAULT_STROKE_STYLE_ = new ol.style.Stroke({
   color: 'rgba(0,0,0,0.2)'
 });
 
+/**
+ * @type {ol.style.Text}
+ * @private
+ * @const
+ */
+ol.Graticule.DEFAULT_TEXT_STYLE_ = new ol.style.Text({
+  textAlign : 'right',
+  textBaseline :'bottom',
+  font : 'normal 12px Arial',
+  fill: new ol.style.Fill({color: 'rgba(0,0,0,1)'}),
+  stroke: new ol.style.Stroke({color: 'rgba(255,255,255,0.5)', width: 2})
+});
 
 /**
  * TODO can be configurable
@@ -150,7 +197,6 @@ ol.Graticule.DEFAULT_STROKE_STYLE_ = new ol.style.Stroke({
  */
 ol.Graticule.intervals_ = [90, 45, 30, 20, 10, 5, 2, 1, 0.5, 0.2, 0.1, 0.05,
   0.01, 0.005, 0.002, 0.001];
-
 
 /**
  * @param {number} lon Longitude.
@@ -201,9 +247,15 @@ ol.Graticule.prototype.addParallel_ = function(lat, minLon, maxLon, squaredToler
  */
 ol.Graticule.prototype.createGraticule_ = function(extent, center, resolution, squaredTolerance) {
 
-  var interval = this.getInterval_(resolution);
+  var interval = this.enabled ? this.getInterval_(resolution) : -1;
+
   if (interval == -1) {
     this.meridians_.length = this.parallels_.length = 0;
+
+	  this.topLabels_.length = 0;
+	  this.bottomLabels_.length = 0;
+	  this.leftLabels_.length = 0;
+	  this.rightLabels_.length = 0;
     return;
   }
 
@@ -235,6 +287,47 @@ ol.Graticule.prototype.createGraticule_ = function(extent, center, resolution, s
   idx = this.addMeridian_(lon, minLat, maxLat, squaredTolerance, extent, 0);
 
   cnt = 0;
+
+  if (this.useLine) {
+    var mapLon, mapLat;
+
+    minLon = this.toLonLatTransform_([extent[0],center[1]])[0],
+    maxLon = this.toLonLatTransform_([extent[2],center[1]])[0],
+    minLat = this.toLonLatTransform_([center[0],extent[1]])[1],
+    maxLat = this.toLonLatTransform_([center[0],extent[3]])[1];
+
+    minLon = Math.floor(minLon/interval)*interval;
+    maxLon = Math.ceil(maxLon/interval)*interval;
+    minLat = Math.floor(minLat/interval)*interval;
+    maxLat = Math.ceil(maxLat/interval)*interval;
+
+    idx = 0;
+    for(lon=minLon; lon<=maxLon; lon+=interval) {
+      mapLon = this.fromLonLatTransform_([lon,centerLonLat[1]])[0];
+      this.meridians_[idx] = this.getLineMeridian_(mapLon, squaredTolerance, extent, idx);
+      this.topLabels_[idx] = this.getLabel_(this.topLabels_,mapLon,extent[3],idx);
+      this.bottomLabels_[idx++] = this.getLabel_(this.bottomLabels_,mapLon,extent[1],idx);
+    }
+    this.meridians_.length = idx;
+    this.topLabels_.length = idx;
+    this.bottomLabels_.length = idx;
+
+    idx = 0;
+    for(lat=minLat; lat<=maxLat; lat+=interval) {
+      mapLat = this.fromLonLatTransform_([centerLonLat[0],lat])[1];
+      this.parallels_[idx] = this.getLineParallel_(mapLat, squaredTolerance, extent, idx);
+      this.leftLabels_[idx] = this.getLabel_(this.leftLabels_,extent[0],mapLat,idx);
+      this.rightLabels_[idx++] = this.getLabel_(this.rightLabels_,extent[2],mapLat,idx);
+    }
+    this.parallels_.length = idx;
+    this.leftLabels_.length = idx;
+    this.rightLabels_.length = idx;
+
+    return;
+  }
+
+  idx = this.addMeridian_(lon, minLat, maxLat, squaredTolerance, extent, 0);
+
   while (lon != this.minLon_ && cnt++ < maxLines) {
     lon = Math.max(lon - interval, this.minLon_);
     idx = this.addMeridian_(lon, minLat, maxLat, squaredTolerance, extent, idx);
@@ -340,6 +433,23 @@ ol.Graticule.prototype.getMeridian_ = function(lon, minLat, maxLat,
 
 
 /**
+ * @param {number} lon Longitude.
+ * @param {number} squaredTolerance Squared tolerance.
+ * @param {ol.Extent} extent Extent.
+ * @param {number} index Index.
+ * @return {ol.geom.LineString} The meridian line string.
+ * @private
+ */
+ol.Graticule.prototype.getLineMeridian_ =
+    function(lon, squaredTolerance, extent, index) {
+
+	var lineString = this.meridians_[index] || new ol.geom.LineString(null);
+
+	lineString.setFlatCoordinates(ol.geom.GeometryLayout.XY, [lon,extent[1],lon,extent[3]]);
+	return lineString;
+};
+
+/**
  * Get the list of meridians.  Meridians are lines of equal longitude.
  * @return {Array.<ol.geom.LineString>} The meridians.
  * @api
@@ -370,6 +480,23 @@ ol.Graticule.prototype.getParallel_ = function(lat, minLon, maxLon,
 
 
 /**
+ * @param {number} lat Latitude.
+ * @param {number} squaredTolerance Squared tolerance.
+ * @param {ol.Extent} extent Extent.
+ * @param {number} index Index.
+ * @return {ol.geom.LineString} The parallel line string.
+ * @private
+ */
+ol.Graticule.prototype.getLineParallel_ =
+    function(lat, squaredTolerance, extent, index) {
+
+	var lineString = this.parallels_[index] || new ol.geom.LineString(null);
+
+	lineString.setFlatCoordinates(ol.geom.GeometryLayout.XY, [extent[0], lat, extent[2], lat]);
+	return lineString;
+};
+
+/**
  * Get the list of parallels.  Pallels are lines of equal latitude.
  * @return {Array.<ol.geom.LineString>} The parallels.
  * @api
@@ -378,6 +505,22 @@ ol.Graticule.prototype.getParallels = function() {
   return this.parallels_;
 };
 
+/**
+ * @param {Array.<ol.geom.Point>} labels label array
+ * @param {number} lon Longitude.
+ * @param {number} lat Latitude.
+ * @param {number} index Index.
+ * @return {ol.geom.Point} The label point.
+ * @private
+ */
+ol.Graticule.prototype.getLabel_ =
+    function(labels, lon, lat, index) {
+
+	var point = labels[index] || new ol.geom.Point(null);
+
+	point.setFlatCoordinates(ol.geom.GeometryLayout.XY, [lon,lat]);
+	return point;
+};
 
 /**
  * @param {ol.render.Event} e Event.
@@ -421,6 +564,10 @@ ol.Graticule.prototype.handlePostCompose_ = function(e) {
 
   this.createGraticule_(extent, center, resolution, squaredTolerance);
 
+  if (!this.enabled) {
+    return
+  }
+
   // Draw the lines
   vectorContext.setFillStrokeStyle(null, this.strokeStyle_);
   var i, l, line;
@@ -432,8 +579,40 @@ ol.Graticule.prototype.handlePostCompose_ = function(e) {
     line = this.parallels_[i];
     vectorContext.drawLineString(line, null);
   }
+
+  this.textStyle_.setTextAlign('left');
+  this.textStyle_.setTextBaseline('middle');
+  this.drawLabels_(this.leftLabels_, vectorContext, 1);
+  this.textStyle_.setTextAlign('right');
+  this.drawLabels_(this.rightLabels_, vectorContext, 1);
+  this.textStyle_.setTextAlign('center');
+  this.textStyle_.setTextBaseline('top');
+  this.drawLabels_(this.topLabels_, vectorContext, 0);
+  this.textStyle_.setTextBaseline('bottom');
+  this.drawLabels_(this.bottomLabels_, vectorContext, 0);
 };
 
+/**
+ * @param {Array.<ol.geom.Point>} labels Labels to draw.
+ * @param {ol.render.VectorContext} vectorContext Vector context.
+ * @param {number} index index.
+ * @private
+ */
+ol.Graticule.prototype.drawLabels_ = function(labels, vectorContext, index) {
+	var label, i, l, v;
+	for (i = 0, l = labels.length; i < l; ++i) {
+		label = labels[i];
+		v = this.toLonLatTransform_(label.getFirstCoordinate())[index];
+		v = (((v%360)+360+180)%360)-180;
+		v = parseFloat(v.toFixed(6)); // Limit to 6 decimal number
+		if (v==-180) {
+			v=180;
+		}
+		this.textStyle_.setText( v+"°" );
+		vectorContext.setTextStyle(this.textStyle_);
+		vectorContext.drawPoint(label, null);
+	}
+};
 
 /**
  * @param {ol.proj.Projection} projection Projection.
@@ -467,7 +646,6 @@ ol.Graticule.prototype.updateProjectionInfo_ = function(projection) {
   this.minLatP_ = minLatP;
   this.minLonP_ = minLonP;
 
-
   this.fromLonLatTransform_ = ol.proj.getTransform(
      epsg4326Projection, projection);
 
@@ -478,8 +656,57 @@ ol.Graticule.prototype.updateProjectionInfo_ = function(projection) {
      ol.extent.getCenter(extent));
 
   this.projection_ = projection;
+
+  var code = projection.getCode(),
+      status = this.getProjStatus(code);
+  this.useLine = status=="line";
+  this.enabled = status!=="none";
 };
 
+/**
+ * Test if meridians and parralleles, using current projection, :
+ * - can be drawn with simple lines (2 points)  => status "line".
+ * - can be drawn with default method => status "default".
+ * - can't be drawn => status "none"
+ * @param {string} code : projection code.
+ * @returns {string} : status "none" / "line" / "default"
+ */
+ol.Graticule.prototype.getProjStatus = function(code) {
+  if (ol.ENABLE_PROJ4JS) {
+    var proj4js = ol.proj.proj4.get();
+    if (typeof proj4js == 'function') {
+      var def = proj4js.defs(code);
+      if (def !== undefined) {
+        switch(def.projName) {
+          case "eqc" : // Validated (EPSG:32662)
+          case "longlat" : // Validated (
+          case "merc" : return "line";
+
+          // Stereographic (Test EPSG:32761) : The default method works
+          // for meridians only and require too many ressources
+          // (GC + core i5 => 3 minutes)
+          case "stere" :
+
+          // Cylindrical Equal Area (Test EPSG:3410) => No result
+          case "cea" :
+
+          // Equidistant Conic (Test ESRI:102031): The default method
+          // works for meridians only and require too many ressources
+          // (GC + core i5 => 3 minutes)
+          case "eqdc" :
+          return 'none';
+
+          // Validated for moll (Test ESRI:53009)
+          default : return"default";
+        }
+      }
+    }
+  }
+
+  // Proj4Js disbaled, test if projection is one of default ol3 projections.
+  // All default ol3 projections are compliant with "use line" optimisation.
+  return !!ol.proj.transforms.get(code,"EPSG:4326") ? "line" : "default";
+};
 
 /**
  * Set the map for this graticule.  The graticule will be rendered on the
